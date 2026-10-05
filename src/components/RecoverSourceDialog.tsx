@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, GitBranch, Loader2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { getErrorMessage, getErrorReason } from "../lib/error";
+import {
+  pickFromCandidate,
+  repoLabel,
+  searchSeeds,
+  toRepoUrl,
+  useSkillsshSearch,
+} from "../lib/recoverSource";
 import * as api from "../lib/tauri";
 import type {
   ManagedSkill,
@@ -27,67 +34,9 @@ interface Props {
   onKeepLocal?: () => Promise<void> | void;
 }
 
-/**
- * Which directory a lost skill was in, best guess first.
- *
- * The recorded path is the strongest signal — it is the folder the user put it
- * in, and very often the upstream skill id verbatim. `name` is next, and the
- * directory name last, since those are the ones that drift.
- */
-function searchSeeds(skill: ManagedSkill): string[] {
-  const basename = (path: string | null): string | null => {
-    if (!path) return null;
-    const parts = path.split(/[\\/]/).filter(Boolean);
-    return parts.length > 0 ? parts[parts.length - 1] : null;
-  };
-  return [
-    basename(skill.source_ref),
-    skill.name,
-    basename(skill.central_path),
-  ].filter((value): value is string => !!value && value.length > 0);
-}
-
-/** Folds the differences between how the two names were written. */
-function normalize(value: string): string {
-  return value.toLowerCase().replace(/[-_\s]+/g, "");
-}
-
-type Confidence = "exact" | "similar" | "other";
-
-function confidenceOf(candidate: SkillsShSkill, seed: string): Confidence {
-  const a = normalize(candidate.skill_id);
-  const b = normalize(seed);
-  if (a === b) return "exact";
-  if (a.includes(b) || b.includes(a)) return "similar";
-  return "other";
-}
-
-/** Accepts a full URL or the `owner/repo` shorthand skills.sh itself uses. */
-function toRepoUrl(input: string): string {
-  const trimmed = input.trim();
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
-  if (/^[\w.-]+\/[\w.-]+$/.test(trimmed)) return `https://github.com/${trimmed}.git`;
-  return trimmed;
-}
-
-/** The last path segment, for showing which directory a candidate is. */
-function repoLabel(pick: RecoverSourcePick): string {
-  try {
-    const url = new URL(pick.repoUrl);
-    return url.hostname.replace(/^www\./, "") + url.pathname.replace(/\.git$/, "");
-  } catch {
-    return pick.repoUrl;
-  }
-}
-
 export function RecoverSourceDialog({ open, skill, onClose, onDone, onKeepLocal }: Props) {
   const { t } = useTranslation();
   const [seedOverride, setSeedOverride] = useState<string | null>(null);
-  const [candidates, setCandidates] = useState<SkillsShSkill[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [searchFailed, setSearchFailed] = useState(false);
-  /** Whether a search has come back yet — an untouched dialog is not "no results". */
-  const [searched, setSearched] = useState(false);
   const [manualUrl, setManualUrl] = useState("");
   const [manualSubpath, setManualSubpath] = useState("");
   const [pick, setPick] = useState<RecoverSourcePick | null>(null);
@@ -104,84 +53,35 @@ export function RecoverSourceDialog({ open, skill, onClose, onDone, onKeepLocal 
   const defaultSeed = skill ? searchSeeds(skill)[0] ?? skill.name : "";
   const seed = seedOverride ?? defaultSeed;
 
-  /**
-   * Which search may still write results.
-   *
-   * A marketplace query is slow and the dialog can be closed and reopened on
-   * another skill while one is in flight; without this the late answer for a
-   * skill the user has moved on from would land on the current one. Bumped
-   * whenever results are cleared, which is what every reset does.
-   */
-  const searchGeneration = useRef(0);
-  /** The seed already auto-searched for; null means "not yet this session". */
-  const autoSearched = useRef<string | null>(null);
+  const {
+    grouped,
+    searching,
+    searchFailed,
+    searched,
+    runSearch,
+    reset: resetSearch,
+  } = useSkillsshSearch(seed, open && !!skill);
 
   // A fresh dialog each time: the previous skill's candidates and the approval
-  // it was given describe a different row and a different revision.
+  // it was given describe a different row and a different revision. `resetSearch`
+  // also orphans an answer still in flight for the skill being left behind.
   useEffect(() => {
     if (!open || !skill) return;
-    searchGeneration.current += 1;
-    autoSearched.current = null;
+    resetSearch();
     setSeedOverride(null);
-    setCandidates([]);
-    setSearchFailed(false);
-    setSearched(false);
     setManualUrl("");
     setManualSubpath("");
     setPick(null);
     setPreview(null);
     setProblem(null);
     setBusy(false);
-  }, [open, skill]);
-
-  const runSearch = useCallback(
-    async (query: string) => {
-      if (!query.trim()) return;
-      // Claim the generation for *this* query, not for this dialog: a user who
-      // searches again without waiting must not have the first answer land on
-      // top of the second, which would leave the box saying one thing and the
-      // list showing another.
-      const generation = ++searchGeneration.current;
-      setSearching(true);
-      setSearchFailed(false);
-      try {
-        const hits = await api.searchSkillssh(query, 30);
-        if (generation !== searchGeneration.current) return;
-        setCandidates(hits);
-        setSearched(true);
-      } catch {
-        if (generation !== searchGeneration.current) return;
-        // Discovery is an accelerator, not a gate: a marketplace that is down,
-        // unreachable or unconfigured must not take the manual path with it.
-        setCandidates([]);
-        setSearchFailed(true);
-        setSearched(true);
-      } finally {
-        if (generation === searchGeneration.current) setSearching(false);
-      }
-    },
-    []
-  );
-
-  // Seed once per skill so a usable candidate is usually already on screen.
-  // Keyed on the derived seed rather than on `open`, so re-opening the same
-  // skill does not re-search but opening a different one always does.
-  useEffect(() => {
-    if (!open || !defaultSeed) return;
-    if (autoSearched.current === defaultSeed) return;
-    autoSearched.current = defaultSeed;
-    void runSearch(defaultSeed);
-  }, [open, defaultSeed, runSearch]);
+  }, [open, skill, resetSearch]);
 
   const chooseCandidate = (hit: SkillsShSkill) => {
     setProblem(null);
     setPreview(null);
     setManualUrl("");
-    setPick({
-      repoUrl: `https://github.com/${hit.source}.git`,
-      locatorSource: hit.source,
-      locatorSkillId: hit.skill_id,
-    });
+    setPick(pickFromCandidate(hit));
   };
 
   /** The manual entry, used when nothing has been picked from the list. */
@@ -261,16 +161,6 @@ export function RecoverSourceDialog({ open, skill, onClose, onDone, onKeepLocal 
       setBusy(false);
     }
   };
-
-  const grouped = useMemo(() => {
-    const order: Confidence[] = ["exact", "similar", "other"];
-    return order
-      .map((level) => ({
-        level,
-        hits: candidates.filter((hit) => confidenceOf(hit, seed) === level),
-      }))
-      .filter((group) => group.hits.length > 0);
-  }, [candidates, seed]);
 
   if (!open || !skill) return null;
 
@@ -402,7 +292,7 @@ export function RecoverSourceDialog({ open, skill, onClose, onDone, onKeepLocal 
             {searchFailed && (
               <p className="text-[12.5px] text-tertiary">{t("mySkills.recover.searchUnavailable")}</p>
             )}
-            {searched && !searchFailed && !searching && candidates.length === 0 && (
+            {searched && !searchFailed && !searching && grouped.length === 0 && (
               <div className="rounded-lg border border-border-subtle bg-bg-secondary px-3 py-2.5">
                 <p className="text-[12.5px] leading-relaxed text-tertiary">
                   {t("mySkills.recover.noResultsHint")}

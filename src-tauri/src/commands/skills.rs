@@ -1830,6 +1830,251 @@ pub async fn recover_skill_source(
     .await?
 }
 
+/// Upper bound on one batch recovery. Every entry is a clone, so an unbounded
+/// list is a way to occupy the process for an unbounded time. The largest
+/// library this ships against is a few hundred skills, so the cap sits well
+/// above any real batch and only rejects a runaway list.
+const MAX_BATCH_RECOVER: usize = 200;
+
+/// One skill's entry in a batch recovery request.
+///
+/// The source travels with the skill because a `source_missing` row carries no
+/// usable remote — the dead local path is the only thing recorded, which is the
+/// whole reason it needs recovering. Approval is per skill for the same reason:
+/// [`crate::core::removals`] binds a token to one revision and one removal list,
+/// and no single revision is true for several repositories at once. A batch
+/// therefore carries N independent approvals, never one shared one.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BatchRecoverRequest {
+    pub skill_id: String,
+    pub repo_url: String,
+    #[serde(default)]
+    pub locator_source: Option<String>,
+    #[serde(default)]
+    pub locator_skill_id: Option<String>,
+    #[serde(default)]
+    pub subpath: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Token from a previous report for *this* skill. `None` on the first call,
+    /// which reports without writing.
+    #[serde(default)]
+    pub approved_removals: Option<String>,
+}
+
+/// One skill's outcome inside a batch.
+///
+/// Every failure mode is data here rather than an error that ends the batch: a
+/// skill whose upstream 404s must not cost the others their commit. The same
+/// reason `pending_removals` is not a failure — declining to approve is an
+/// answer, not an error.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BatchRecoverItem {
+    pub skill_id: String,
+    pub name: String,
+    pub applied: bool,
+    pub content_changed: bool,
+    pub clone_url: String,
+    pub revision: String,
+    pub subpath: Option<String>,
+    pub branch: Option<String>,
+    pub pending_removals: Vec<PendingRemoval>,
+    pub removal_approval: Option<String>,
+    pub diff_entries: Vec<SkillSourceDiffEntryDto>,
+    pub central_copy_exists: bool,
+    pub duplicate_skill_name: Option<String>,
+    /// Why this skill did not make it. `None` on success — including a skill
+    /// that is held back awaiting approval, which is reported through
+    /// `removal_approval` instead.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BatchRecoverResult {
+    pub requested: usize,
+    pub applied: usize,
+    pub held: usize,
+    pub failed: usize,
+    pub items: Vec<BatchRecoverItem>,
+}
+
+/// Recover several skills whose original paths are gone, in one call.
+///
+/// Two calls make the batch: the first reports every skill without writing
+/// anything, the second carries each skill's own approval back. Reporting
+/// resolves N upstreams, so a batch costs N clones — that is inherent to the
+/// two-phase contract, not something this loop can avoid.
+///
+/// Serial on purpose. Each commit takes and releases the central repo lock
+/// inside itself, so this loop never holds it across a clone — which is the
+/// whole reason the lock is not taken out here. Running two commits
+/// concurrently would serialise on that lock anyway while adding the cost of
+/// interleaved staging directories for no gain.
+///
+/// `on_progress` is called as `(index, total, name, done)` around each skill.
+/// Reporting N sources means N clones, and a batch of a dozen is minutes of
+/// work; a caller showing one spinner for that is indistinguishable from a
+/// hang. It is an argument rather than an app handle so the CLI can print the
+/// same steps and the tests can ignore them.
+pub fn batch_recover_skill_sources_internal(
+    store: &SkillStore,
+    requests: &[BatchRecoverRequest],
+    proxy_url: Option<&str>,
+    mut on_progress: Option<&mut dyn FnMut(usize, usize, &str, bool)>,
+) -> Result<BatchRecoverResult, AppError> {
+    if requests.is_empty() {
+        return Err(AppError::invalid_input("No skills to recover"));
+    }
+    if requests.len() > MAX_BATCH_RECOVER {
+        return Err(AppError::invalid_input(format!(
+            "A batch recovers at most {MAX_BATCH_RECOVER} skills at a time; got {}",
+            requests.len()
+        )));
+    }
+
+    // The same row twice would recover once and then be refused on the second
+    // pass by the local/import guard, which reads as a batch bug rather than a
+    // caller mistake. Say so up front instead.
+    let mut seen = std::collections::HashSet::new();
+    for request in requests {
+        if !seen.insert(request.skill_id.as_str()) {
+            return Err(AppError::invalid_input(format!(
+                "Skill '{}' appears more than once in the batch",
+                request.skill_id
+            )));
+        }
+    }
+
+    let mut applied = 0usize;
+    let mut held = 0usize;
+    let mut failed = 0usize;
+    let mut items = Vec::with_capacity(requests.len());
+
+    for (position, request) in requests.iter().enumerate() {
+        let name = store
+            .get_skill_by_id(&request.skill_id)
+            .ok()
+            .flatten()
+            .map(|skill| skill.name)
+            .unwrap_or_else(|| request.skill_id.clone());
+
+        if let Some(report) = on_progress.as_mut() {
+            report(position + 1, requests.len(), &name, false);
+        }
+
+        let item = match recover_skill_source_internal(
+            store,
+            &request.skill_id,
+            &request.repo_url,
+            request.locator_source.as_deref(),
+            request.locator_skill_id.as_deref(),
+            request.subpath.as_deref(),
+            request.branch.as_deref(),
+            proxy_url,
+            request.approved_removals.as_deref(),
+        ) {
+            Ok(result) => {
+                if result.applied {
+                    applied += 1;
+                } else {
+                    held += 1;
+                }
+                BatchRecoverItem {
+                    skill_id: result.skill_id,
+                    name: name.clone(),
+                    applied: result.applied,
+                    content_changed: result.content_changed,
+                    clone_url: result.clone_url,
+                    revision: result.revision,
+                    subpath: result.subpath,
+                    branch: result.branch,
+                    pending_removals: result.pending_removals,
+                    removal_approval: result.removal_approval,
+                    diff_entries: result.diff_entries,
+                    central_copy_exists: result.central_copy_exists,
+                    duplicate_skill_name: result.duplicate_skill_name,
+                    error: None,
+                }
+            }
+            // The row keeps its pre-attempt status, so a skill that fails here
+            // is still recoverable on the next run — the batch reports the
+            // reason instead of ending the call.
+            Err(err) => {
+                failed += 1;
+                BatchRecoverItem {
+                    skill_id: request.skill_id.clone(),
+                    name: name.clone(),
+                    applied: false,
+                    content_changed: false,
+                    clone_url: request.repo_url.clone(),
+                    revision: String::new(),
+                    subpath: request.subpath.clone(),
+                    branch: request.branch.clone(),
+                    pending_removals: Vec::new(),
+                    removal_approval: None,
+                    diff_entries: Vec::new(),
+                    central_copy_exists: false,
+                    duplicate_skill_name: None,
+                    error: Some(err.message.clone()),
+                }
+            }
+        };
+        if let Some(report) = on_progress.as_mut() {
+            report(position + 1, requests.len(), &name, true);
+        }
+        items.push(item);
+    }
+
+    Ok(BatchRecoverResult {
+        requested: requests.len(),
+        applied,
+        held,
+        failed,
+        items,
+    })
+}
+
+#[tauri::command]
+/// Recover several skills whose original paths are gone, in one call.
+///
+/// Mirrors [`recover_skill_source`] per skill rather than replacing it: every
+/// entry goes through the same gate and the same commit path, so a batch cannot
+/// acquire a capability the single-skill command refuses. See
+/// [`batch_recover_skill_sources_internal`] for why the loop is serial.
+///
+/// Emits `batch-recover-progress` around each skill. Reporting N sources means
+/// N clones, so a batch can run for minutes; without this the only honest
+/// thing the UI could show was a spinner that never ends.
+pub async fn batch_recover_skill_sources(
+    app: tauri::AppHandle,
+    requests: Vec<BatchRecoverRequest>,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<BatchRecoverResult, AppError> {
+    use tauri::Emitter;
+    let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut report = |index: usize, total: usize, name: &str, done: bool| {
+            let _ = app.emit(
+                "batch-recover-progress",
+                serde_json::json!({
+                    "index": index,
+                    "total": total,
+                    "name": name,
+                    "done": done,
+                }),
+            );
+        };
+        batch_recover_skill_sources_internal(
+            &store,
+            &requests,
+            proxy_url.as_deref(),
+            Some(&mut report),
+        )
+    })
+    .await?
+}
+
 fn managed_skill_to_dto(
     store: &SkillStore,
     skill: SkillRecord,
@@ -5244,6 +5489,122 @@ fn a_gone_library_copy_is_reinstalled_even_when_the_hash_agrees() {
             repo.store.get_skill_by_id("g1").unwrap().unwrap().source_type,
             "git",
             "a refused recovery must not have touched the row"
+        );
+    }
+
+    // ── Batch recovery ──
+
+    /// A minimal batch entry: every field past the id and the URL has a
+    /// default in the real flow, and these cases turn on neither.
+    fn request_for(skill_id: &str, repo_url: &str) -> BatchRecoverRequest {
+        BatchRecoverRequest {
+            skill_id: skill_id.to_string(),
+            repo_url: repo_url.to_string(),
+            locator_source: None,
+            locator_skill_id: None,
+            subpath: None,
+            branch: None,
+            approved_removals: None,
+        }
+    }
+
+    /// Reported success for a batch that did nothing is the one answer the UI
+    /// cannot recover from, so an empty batch is refused.
+    #[test]
+    fn an_empty_batch_recovers_nothing_rather_than_reporting_success() {
+        let repo = test_repo();
+        let err = batch_recover_skill_sources_internal(&repo.store, &[], None, None).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(err.message.contains("No skills"));
+    }
+
+    /// Every entry is a clone, so an unbounded list is an unbounded wait.
+    #[test]
+    fn a_batch_is_capped_so_a_runaway_list_cannot_queue_unbounded_clones() {
+        let repo = test_repo();
+        let requests: Vec<BatchRecoverRequest> = (0..=MAX_BATCH_RECOVER)
+            .map(|i| request_for(&format!("s{i}"), "https://github.com/acme/skills.git"))
+            .collect();
+        let err =
+            batch_recover_skill_sources_internal(&repo.store, &requests, None, None).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(
+            err.message.contains(&MAX_BATCH_RECOVER.to_string()),
+            "the message has to say where the limit is: {}",
+            err.message
+        );
+    }
+
+    /// The same row twice would recover once and then be refused by the
+    /// local/import guard, which reads as a batch bug rather than a caller
+    /// mistake. Say so before anything runs.
+    #[test]
+    fn a_repeated_skill_is_refused_before_anything_runs() {
+        let repo = test_repo();
+        let entry = request_for("s1", "https://github.com/acme/skills.git");
+        let err = batch_recover_skill_sources_internal(&repo.store, &[entry.clone(), entry], None, None)
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(err.message.contains("more than once"));
+    }
+
+    /// The point of a batch is that one bad skill does not cost the others
+    /// their turn. Each refusal here lands before the network, so this needs no
+    /// remote — and it asserts the rows are untouched, because a refusal that
+    /// left `source_missing` behind as `error` would hide the rescue buttons.
+    #[test]
+    fn one_skill_failing_does_not_cost_the_batch_its_place() {
+        let repo = test_repo();
+
+        // Never lost its source, so the guard refuses it.
+        let central = write_skill_dir("tracked");
+        let mut tracked = sample_skill("g1", "tracked", &central);
+        tracked.source_type = "git".to_string();
+        tracked.source_ref = Some("https://github.com/acme/skills.git".to_string());
+        repo.store.insert_skill(&tracked).unwrap();
+
+        // The only kind that can be recovered at all.
+        let (lost, _) = lost_local_skill(&repo, "s1", "pdf", "old body");
+
+        let result = batch_recover_skill_sources_internal(
+            &repo.store,
+            &[
+                request_for("does-not-exist", "https://github.com/acme/skills.git"),
+                request_for("g1", "https://github.com/acme/skills.git"),
+                request_for(&lost.id, "file:///etc/passwd"),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result.requested, 3);
+        assert_eq!(result.failed, 3);
+        assert_eq!(result.applied, 0);
+        assert_eq!(
+            result.held, 0,
+            "a refusal is a failure, not something awaiting approval"
+        );
+        assert_eq!(result.items.len(), 3, "the loop ran to the end of the list");
+        assert!(
+            result.items.iter().all(|item| item.error.is_some()),
+            "every entry carries its own reason: {:?}",
+            result
+                .items
+                .iter()
+                .map(|item| item.error.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.items[0].skill_id, "does-not-exist");
+        assert_eq!(result.items[1].name, "tracked");
+        assert_eq!(
+            repo.store
+                .get_skill_by_id(&lost.id)
+                .unwrap()
+                .unwrap()
+                .update_status,
+            "source_missing",
+            "a refused batch entry must leave the row recoverable"
         );
     }
 

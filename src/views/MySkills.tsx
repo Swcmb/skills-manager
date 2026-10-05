@@ -38,6 +38,7 @@ import { TagRenameDialog } from "../components/TagRenameDialog";
 import { SkillDetailPanel } from "../components/SkillDetailPanel";
 import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
 import { BatchTagDialog } from "../components/BatchTagDialog";
+import { BatchRecoverSourceDialog } from "../components/BatchRecoverSourceDialog";
 import { BatchSyncAgentDialog } from "../components/BatchSyncAgentDialog";
 import { SyncDots } from "../components/SyncDots";
 import { ToggleSwitch } from "../components/ToggleSwitch";
@@ -165,6 +166,7 @@ export function MySkills() {
   const refreshAfterDeleteRef = useRef<number | null>(null);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
   const [batchTagDialogOpen, setBatchTagDialogOpen] = useState(false);
+  const [batchRecoverOpen, setBatchRecoverOpen] = useState(false);
   const [batchSyncDialogOpen, setBatchSyncDialogOpen] = useState(false);
   const [batchToggling, setBatchToggling] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
@@ -349,7 +351,8 @@ export function MySkills() {
       filterMode,
       viewedPreset?.id ?? null,
     ]),
-    escapeEnabled: !batchTagDialogOpen && !batchSyncDialogOpen && !batchDeleteConfirm,
+    escapeEnabled:
+      !batchTagDialogOpen && !batchSyncDialogOpen && !batchDeleteConfirm && !batchRecoverOpen,
   });
 
   const selectedSkill = useMemo(
@@ -1076,6 +1079,21 @@ export function MySkills() {
     [skills, selectedIds]
   );
   /**
+   * Only the selected skills a recovery would actually accept. A mixed selection
+   * must not count rows the command refuses, or the button promises a batch that
+   * reports half of it as failures.
+   */
+  const recoverableSelected = useMemo(
+    () =>
+      skills.filter(
+        (skill) =>
+          selectedIds.has(skill.id) &&
+          (skill.source_type === "local" || skill.source_type === "import") &&
+          skill.update_status === "source_missing"
+      ),
+    [skills, selectedIds]
+  );
+  /**
    * Only the selected skills the toggle would actually change — a mixed selection
    * enables the ones that are off, so the button must not count the rest.
    */
@@ -1320,6 +1338,17 @@ export function MySkills() {
                     : <Circle className="h-3.5 w-3.5" />,
                   busy: batchToggling,
                   onSelect: handleBatchTogglePreset,
+                }]
+              : []),
+            ...(recoverableSelected.length > 0
+              ? [{
+                  key: "recover",
+                  tone: "primary" as const,
+                  label: t("mySkills.batchRecover.toolbarLabel", {
+                    count: recoverableSelected.length,
+                  }),
+                  icon: <GitBranch className="h-3.5 w-3.5" />,
+                  onSelect: () => setBatchRecoverOpen(true),
                 }]
               : []),
             {
@@ -2009,6 +2038,14 @@ export function MySkills() {
         allTags={allTags}
         onClose={() => setBatchTagDialogOpen(false)}
         onApply={handleBatchEditTags}
+      />
+
+      <BatchRecoverSourceDialog
+        open={batchRecoverOpen}
+        skills={recoverableSelected}
+        skipped={selectedIds.size - recoverableSelected.length}
+        onClose={() => setBatchRecoverOpen(false)}
+        onDone={refreshManagedSkills}
       />
 
       <BatchSyncAgentDialog

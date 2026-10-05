@@ -422,6 +422,26 @@
       "reinstalledUnchanged": "Source now tracked; the installed content was already identical",
       "failed": "The source could not be read; nothing was changed."
     },
+    "batchRecover": {
+      "title": "Find sources online in bulk",
+      "subtitle": "The folders these {{count}} skills were imported from no longer exist. Point each one at the repository it came from and confirm them together — every skill keeps its own id, tags, presets and deployments.",
+      "skippedNotice": "{{count}} skipped: their path is not missing, or the source is already remote.",
+      "noMatch": "Nothing on skills.sh matches. Paste a repository address below.",
+      "preparing": "Resolving sources…",
+      "progress": "Resolving {{index}}/{{total}}: {{name}}",
+      "failedLine": "{{count}} could not be recovered",
+      "summaryLine": "{{count}} awaiting confirmation.",
+      "removalsTotal": "{{count}} path(s) removed in total.",
+      "alreadyApplied": "{{count}} more matched already and were committed on the way.",
+      "showDiff": "Show the file differences",
+      "partial": "{{failed}} failed; the rest are listed below.",
+      "applied": "Re-installed {{count}} skill(s)",
+      "missingSources": "{{count}} skill(s) still need a source",
+      "readyHint": "Every skill has a source. Ready to report.",
+      "previewButton": "Report {{count}}",
+      "confirmButton": "Re-install {{count}}",
+      "toolbarLabel": "Find {{count}} online"
+    },
     "gitConfigEntry": "Sync Config",
     "filters": {
       "all": "All",

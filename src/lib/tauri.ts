@@ -434,6 +434,60 @@ export const recoverSkillSource = (
     approvedRemovals: approvedRemovals ?? null,
   });
 
+/**
+ * One skill's entry in a batch recovery request.
+ *
+ * The source travels with the skill because a lost row records nothing usable —
+ * the dead local path is all it has. Approval is per skill for the same reason:
+ * a token is bound to one revision and one removal list, and no single revision
+ * is true for several repositories at once.
+ */
+export interface BatchRecoverSourceEntry {
+  skill_id: string;
+  repo_url: string;
+  locator_source?: string | null;
+  locator_skill_id?: string | null;
+  subpath?: string | null;
+  branch?: string | null;
+  /** Token from a previous report for *this* skill. Omitted on the first call. */
+  approved_removals?: string | null;
+}
+
+export interface BatchRecoverItem {
+  skill_id: string;
+  name: string;
+  applied: boolean;
+  content_changed: boolean;
+  clone_url: string;
+  revision: string;
+  subpath: string | null;
+  pending_removals: PendingRemoval[];
+  removal_approval: string | null;
+  diff_entries: SkillSourceDiffEntry[];
+  central_copy_exists: boolean;
+  /** Why this skill did not make it. Absent on success, including on a skill
+   *  that is held back awaiting approval. */
+  error?: string | null;
+}
+
+export interface BatchRecoverResult {
+  requested: number;
+  applied: number;
+  held: number;
+  failed: number;
+  items: BatchRecoverItem[];
+}
+
+/**
+ * Report or commit several recoveries at once.
+ *
+ * First call carries no `approved_removals` and writes nothing: every entry
+ * reports its own diff and its own approval. The second call passes each token
+ * back against the same skill.
+ */
+export const batchRecoverSkillSources = (requests: BatchRecoverSourceEntry[]) =>
+  invoke<BatchRecoverResult>("batch_recover_skill_sources", { requests });
+
 export interface BatchImportResult {
   imported: number;
   skipped: number;
