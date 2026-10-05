@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  🎬 <a href="https://www.youtube.com/watch?v=wfbCrfNASVU">Video intro (YouTube)</a>
+  🎬 <a href="https://www.youtube.com/watch?v=SNVD5ZN6QPE">Video intro (YouTube)</a>
   &nbsp;·&nbsp;
   <a href="https://www.bilibili.com/video/BV1845F6REUu/">视频介绍 (Bilibili)</a>
 </p>
