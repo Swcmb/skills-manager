@@ -42,6 +42,7 @@ import { BatchSyncAgentDialog } from "../components/BatchSyncAgentDialog";
 import { SyncDots } from "../components/SyncDots";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { CardActionMenu } from "../components/CardActionMenu";
+import { RecoverSourceDialog } from "../components/RecoverSourceDialog";
 import * as api from "../lib/tauri";
 import { getTagActiveColor, getTagColor, pruneStaleTagFilters, UNTAGGED_FILTER } from "../lib/skillTags";
 import type {
@@ -178,6 +179,7 @@ export function MySkills() {
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [menuSkillId, setMenuSkillId] = useState<string | null>(null);
   const [skillToDelete, setSkillToDelete] = useState<ManagedSkill | null>(null);
+  const [recoverTarget, setRecoverTarget] = useState<ManagedSkill | null>(null);
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
 
@@ -1045,10 +1047,21 @@ export function MySkills() {
     }
   };
 
+  /**
+   * Whether the refresh action can do anything for this skill.
+   *
+   * A `local`/`import` row whose path is gone is excluded: refreshing it only
+   * reaches the re-import's own "path no longer exists" refusal, so showing the
+   * button — here, in the card menu, or in the batch counts that read this same
+   * predicate — offers an action that can only fail. Those rows are reachable
+   * through the relink / find-source / detach actions instead.
+   */
   const canRefresh = (skill: ManagedSkill) =>
     skill.source_type === "git" ||
     skill.source_type === "skillssh" ||
-    ((skill.source_type === "local" || skill.source_type === "import") && !!skill.source_ref);
+    ((skill.source_type === "local" || skill.source_type === "import") &&
+      !!skill.source_ref &&
+      skill.update_status !== "source_missing");
 
   const anyRefreshableSelected = useMemo(
     () => skills.some((skill) => selectedIds.has(skill.id) && canRefresh(skill)),
@@ -1547,6 +1560,12 @@ export function MySkills() {
                               {t("mySkills.updateActions.relink")}
                             </button>
                             <button
+                              onClick={(e) => { e.stopPropagation(); setRecoverTarget(skill); }}
+                              className="rounded-full border border-border-subtle px-2 py-0.5 text-[12px] font-medium text-secondary transition-colors hover:bg-surface-hover"
+                            >
+                              {t("mySkills.updateActions.findOnline")}
+                            </button>
+                            <button
                               onClick={(e) => { e.stopPropagation(); handleDetachSource(skill); }}
                               disabled={updatingSkillId === skill.id}
                               className="rounded-full border border-border-subtle px-2 py-0.5 text-[12px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
@@ -1796,6 +1815,12 @@ export function MySkills() {
                       {t("mySkills.updateActions.relink")}
                     </button>
                     <button
+                      onClick={(e) => { e.stopPropagation(); setRecoverTarget(skill); }}
+                      className="rounded px-2 py-0.5 text-[13px] font-medium text-secondary transition-colors hover:bg-surface-hover"
+                    >
+                      {t("mySkills.updateActions.findOnline")}
+                    </button>
+                    <button
                       onClick={(e) => { e.stopPropagation(); handleDetachSource(skill); }}
                       disabled={updatingSkillId === skill.id}
                       className="rounded px-2 py-0.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
@@ -1927,6 +1952,17 @@ export function MySkills() {
         currentName={tagToRename || ""}
         onClose={() => setTagToRename(null)}
         onRename={handleRenameTag}
+      />
+      <RecoverSourceDialog
+        open={recoverTarget !== null}
+        skill={recoverTarget}
+        onClose={() => setRecoverTarget(null)}
+        onDone={refreshManagedSkills}
+        onKeepLocal={async () => {
+          const target = recoverTarget;
+          setRecoverTarget(null);
+          if (target) await handleDetachSource(target);
+        }}
       />
       {tagMenu && (
         <>

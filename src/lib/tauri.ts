@@ -379,6 +379,61 @@ export const relinkLocalSkillSource = (
 export const detachLocalSkillSource = (skillId: string) =>
   invoke<ManagedSkill>("detach_local_skill_source", { skillId });
 
+/**
+ * The outcome of asking a skill to follow a repository instead of the local
+ * path it lost.
+ *
+ * The first call never commits: it reports what the replacement would change
+ * and what it would take away, bound to one approval. Pass that approval back
+ * to commit. Anything that changes in between invalidates it and the call
+ * reports again rather than applying.
+ */
+export interface RecoverSkillSourceResult {
+  skill_id: string;
+  name: string;
+  previous_source_type: string;
+  previous_source_ref: string | null;
+  clone_url: string;
+  subpath: string | null;
+  branch: string | null;
+  revision: string;
+  content_changed: boolean;
+  dry_run: boolean;
+  /** False means nothing was written and this is waiting on the user. */
+  applied: boolean;
+  pending_removals: PendingRemoval[];
+  removal_approval: string | null;
+  diff_entries: SkillSourceDiffEntry[];
+  /** False when the library copy is gone too — nothing left to roll back to. */
+  central_copy_exists: boolean;
+  duplicate_skill_name: string | null;
+}
+
+/** What the user picked, ready to be handed to `recoverSkillSource`. */
+export interface RecoverSourcePick {
+  repoUrl: string;
+  /** skills.sh's `owner/repo`; with `locatorSkillId` it makes a locator. */
+  locatorSource?: string | null;
+  locatorSkillId?: string | null;
+  subpath?: string | null;
+  branch?: string | null;
+}
+
+export const recoverSkillSource = (
+  skillId: string,
+  pick: RecoverSourcePick,
+  approvedRemovals?: string | null
+) =>
+  invoke<RecoverSkillSourceResult>("recover_skill_source", {
+    skillId,
+    repoUrl: pick.repoUrl,
+    locatorSource: pick.locatorSource ?? null,
+    locatorSkillId: pick.locatorSkillId ?? null,
+    subpath: pick.subpath ?? null,
+    branch: pick.branch ?? null,
+    approvedRemovals: approvedRemovals ?? null,
+  });
+
 export interface BatchImportResult {
   imported: number;
   skipped: number;

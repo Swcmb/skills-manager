@@ -983,6 +983,21 @@ fn run_skills(args: SkillsArgs, store: &SkillStore, json: bool) -> anyhow::Resul
                 dry_run,
             )
             .map_err(map_app_err)?;
+            // `applied == false` means the change is waiting on an answer rather
+            // than done: a replacement that would take files away, or content
+            // that differs from the library copy. There is no way to send an
+            // approval token from here, so say what is pending instead of
+            // committing. A dry run reports `applied: true` — producing the
+            // report is its whole job.
+            if !report.applied {
+                if !report.pending_removals.is_empty() {
+                    bail!(
+                        "Re-pointing would remove {} path(s) from the library copy and its deployed copies; re-run with --force to overwrite",
+                        report.pending_removals.len()
+                    );
+                }
+                bail!("New source content differs from the current library copy; re-run with --dry-run to inspect, or --force to overwrite");
+            }
             print_json(&report, json);
         }
         SkillsCommand::Adopt {
