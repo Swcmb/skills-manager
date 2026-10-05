@@ -422,6 +422,26 @@
       "reinstalledUnchanged": "来源已重新关联；已安装的内容本就完全一致",
       "failed": "无法读取该来源；没有任何改动。"
     },
+    "batchRecover": {
+      "title": "批量从线上找回来源",
+      "subtitle": "这 {{count}} 个 Skill 原本导入自的文件夹已经不存在了。逐个指定它们原来的仓库，再统一确认——每个 Skill 各自保留 id、标签、预设与部署目标。",
+      "skippedNotice": "另有 {{count}} 个已跳过：它们的原路径没有丢失，或来源已经是远程。",
+      "noMatch": "skills.sh 上没有匹配项，可在下方直接填写仓库地址。",
+      "preparing": "正在解析来源……",
+      "progress": "正在解析 {{index}}/{{total}}：{{name}}",
+      "failedLine": "{{count}} 项无法找回",
+      "summaryLine": "{{count}} 项等待确认。",
+      "removalsTotal": "合计将移除 {{count}} 个路径。",
+      "alreadyApplied": "另有 {{count}} 项内容本就一致，已直接生效。",
+      "showDiff": "查看文件差异",
+      "partial": "{{failed}} 项失败，其余列在下面。",
+      "applied": "已重新安装 {{count}} 个 Skill",
+      "missingSources": "还有 {{count}} 个 Skill 没有选择来源",
+      "readyHint": "全部已指定来源，可以预览。",
+      "previewButton": "预览 {{count}} 项",
+      "confirmButton": "确认重装 {{count}} 项",
+      "toolbarLabel": "从线上找回 {{count}} 个"
+    },
     "gitConfigEntry": "同步配置",
     "filters": {
       "all": "全部",

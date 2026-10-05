@@ -391,6 +391,26 @@
       "reinstalledUnchanged": "來源已重新關聯；已安裝的內容本來就完全一致",
       "failed": "無法讀取該來源；沒有任何改動。"
     },
+    "batchRecover": {
+      "title": "批次從線上找回來源",
+      "subtitle": "這 {{count}} 個 Skill 原本匯入自的資料夾已經不存在了。逐個指定它們原來的倉庫，再統一確認——每個 Skill 各自保留 id、標籤、預設集與部署目標。",
+      "skippedNotice": "另有 {{count}} 個已跳過：它們的路徑沒有遺失，或來源已經是遠端。",
+      "noMatch": "skills.sh 上沒有相符項目，可在下方直接填寫倉庫地址。",
+      "preparing": "正在解析來源……",
+      "progress": "正在解析 {{index}}/{{total}}：{{name}}",
+      "failedLine": "{{count}} 項無法找回",
+      "summaryLine": "{{count}} 項等待確認。",
+      "removalsTotal": "合計將移除 {{count}} 個路徑。",
+      "alreadyApplied": "另有 {{count}} 項內容本就一致，已直接生效。",
+      "showDiff": "檢視檔案差異",
+      "partial": "{{failed}} 項失敗，其餘列在下面。",
+      "applied": "已重新安裝 {{count}} 個 Skill",
+      "missingSources": "還有 {{count}} 個 Skill 沒有選擇來源",
+      "readyHint": "全部已指定來源，可以預覽。",
+      "previewButton": "預覽 {{count}} 項",
+      "confirmButton": "確認重裝 {{count}} 項",
+      "toolbarLabel": "從線上找回 {{count}} 個"
+    },
     "gitConfigEntry": "同步設定",
     "filters": {
       "all": "全部",
